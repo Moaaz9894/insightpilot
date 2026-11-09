@@ -42,7 +42,7 @@ The model forecasts 528 series (family × region) 28 days ahead and is evaluated
 | Agent tool-routing accuracy (offline) | 3 / 3 |
 | Automated tests | 31 passing (pipeline, ML, security, RAG, API, MCP, real-data ingest) |
 
-![API demo](docs/img/api-chat-real.png)
+![API demo](docs/img/api-chat-real.jpeg)
 
 Baseline = rolling 28-day mean of past demand. Features: calendar, promotion intensity, national holidays, oil price, 28-day lag/rolling demand.
 **CI runs on a synthetic dataset** (no Kaggle access in CI); the real-data numbers above come from running the ingest locally (`make eval` or `python -m eval.run_eval`).

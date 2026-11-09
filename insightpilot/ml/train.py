@@ -25,6 +25,7 @@ def train() -> dict:
     con.close()
     skus, regions = sorted(df["sku"].unique()), sorted(df["region"].unique())
     feat = build_features(df, skus, regions).dropna(subset=["lag_28", "roll_28"])
+    print(f"training rows={len(feat):,} series={len(skus) * len(regions)}")
     cutoff = pd.to_datetime(feat["sale_date"]).max() - pd.Timedelta(days=VAL_DAYS)
     is_val = pd.to_datetime(feat["sale_date"]) > cutoff
     tr, va = feat[~is_val], feat[is_val]
@@ -49,6 +50,6 @@ def train() -> dict:
             print("MLflow registry skipped:", e)
         # final model: refit on ALL data for serving
         final = LGBMRegressor(**PARAMS).fit(feat[FEATURES], feat["units"])
-        joblib.dump({"model": final, "skus": skus, "regions": regions,
-                     "metrics": metrics, "run_id": run.info.run_id}, model_path())
+        joblib.dump({"model": final, "skus": skus, "regions": regions, "metrics": metrics,
+                     "run_id": run.info.run_id, "data_end": str(df["sale_date"].max())[:10]}, model_path())
     return metrics

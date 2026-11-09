@@ -16,7 +16,7 @@ for m in st.session_state.msgs:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-if q := st.chat_input("e.g. Forecast SKU-001 in North for 14 days"):
+if q := st.chat_input("e.g. Forecast BEVERAGES in Guayas for 14 days"):
     st.session_state.msgs.append({"role": "user", "content": q})
     with st.chat_message("user"):
         st.markdown(q)

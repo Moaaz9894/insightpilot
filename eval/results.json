@@ -1,9 +1,9 @@
 {
   "retrieval_hit@1": 1.0,
   "retrieval_hit@3": 1.0,
-  "forecast_wmape": 0.0842,
-  "baseline_wmape": 0.1794,
-  "forecast_improvement_vs_baseline": 0.531,
+  "forecast_wmape": 0.1173,
+  "baseline_wmape": 0.2018,
+  "forecast_improvement_vs_baseline": 0.419,
   "sql_attacks_blocked": "6/6",
   "agent_routing_accuracy": 1.0,
   "agent_mode": "offline-demo"

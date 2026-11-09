@@ -22,6 +22,9 @@ PRODUCTS = [
 
 
 def generate(days: int = 730, n_stores: int = 20, seed: int = 42, out=None):
+    """Canonical raw schema (shared with the real-data ingest):
+    sale_date, store_id, region, channel, sku, product_name, category, units,
+    promo_items, is_holiday, oil_price"""
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2024-01-01", periods=days, freq="D")
     stores = pd.DataFrame({
@@ -44,18 +47,20 @@ def generate(days: int = 730, n_stores: int = 20, seed: int = 42, out=None):
     season = np.where(hot, 1 + 0.30 * np.sin(2 * np.pi * (doy - 100) / 365),
                       1 + 0.08 * np.sin(2 * np.pi * (doy - 300) / 365))
     weekly = 1 + 0.18 * (dow >= 4)
-    promo = (rng.random(len(df)) < 0.10).astype(int)
-    infl = 1 + 0.08 * (df["sale_date"] - dates[0]).dt.days.to_numpy() / 365
-    list_price = df["base_price"].to_numpy() * infl
-    price = np.round(list_price * (1 - 0.15 * promo), 2)
+    promo = rng.random(len(df)) < 0.10
+    promo_items = np.where(promo, rng.integers(3, 16, len(df)), 0)
+    md = df["sale_date"].dt.strftime("%m-%d")
+    holiday = md.isin(["01-01", "05-01", "10-28", "12-24"]).to_numpy()
+    oil = pd.Series(60 + np.cumsum(rng.normal(0, 0.8, days)).clip(-25, 25), index=dates).round(2)
     lam = (df["store_scale"].to_numpy() * df["sku_scale"].to_numpy() * weekly * season
-           * np.where(promo == 1, 1.25, 1.0) * (price / list_price) ** -1.0)
+           * np.where(promo, 1.4, 1.0) * np.where(holiday, 1.2, 1.0))
     df["units"] = rng.poisson(lam).astype(float)
-    df["unit_price"] = price
-    df["promo_flag"] = promo
+    df["promo_items"] = promo_items
+    df["is_holiday"] = holiday.astype(int)
+    df["oil_price"] = df["sale_date"].map(oil)
 
     cols = ["sale_date", "store_id", "region", "channel", "sku", "product_name",
-            "category", "units", "unit_price", "promo_flag"]
+            "category", "units", "promo_items", "is_holiday", "oil_price"]
     df = df[cols].reset_index(drop=True)
     # --- inject realistic dirt for the Silver layer to fix ---
     dup = df.sample(frac=0.003, random_state=seed)

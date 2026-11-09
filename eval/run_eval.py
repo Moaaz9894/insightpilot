@@ -24,9 +24,11 @@ RETRIEVAL = [
 ]
 SQL_ATTACKS = ["DROP TABLE gold_daily_sales", "SELECT 1; SELECT 2", "SELECT * FROM read_csv('/etc/passwd')",
                "DELETE FROM gold_daily_sales", "SELECT 1 -- x", "COPY gold_daily_sales TO 'x.csv'"]
-AGENT_CASES = [("forecast SKU-003 in South for 10 days", "get_forecast"),
-               ("what is the credit limit policy", "search_policies"),
-               ("top categories by revenue", "query_sales_sql")]
+def agent_cases():
+    d = predict.dimensions()
+    return [(f"forecast {d['skus'][0]} in {d['regions'][0]} for 10 days", "get_forecast"),
+            ("what is the credit limit policy", "search_policies"),
+            ("top categories by units sold", "query_sales_sql")]
 
 
 def main():
@@ -44,14 +46,15 @@ def main():
         except ValueError:
             blocked += 1
     agent = Agent()
-    routed = sum(agent.run(q)["tool_calls"][0]["tool"] == t for q, t in AGENT_CASES)
+    cases = agent_cases()
+    routed = sum(agent.run(q)["tool_calls"][0]["tool"] == t for q, t in cases)
     m = predict.dimensions()["metrics"]
     res = {
         "retrieval_hit@1": hits1 / len(RETRIEVAL), "retrieval_hit@3": hits3 / len(RETRIEVAL),
         "forecast_wmape": round(m["val_wmape"], 4), "baseline_wmape": round(m["baseline_wmape_roll28"], 4),
         "forecast_improvement_vs_baseline": round(m["improvement_vs_baseline"], 3),
         "sql_attacks_blocked": f"{blocked}/{len(SQL_ATTACKS)}",
-        "agent_routing_accuracy": routed / len(AGENT_CASES), "agent_mode": agent.run("hi")["mode"],
+        "agent_routing_accuracy": routed / len(cases), "agent_mode": agent.run("hi")["mode"],
     }
     Path(__file__).with_name("results.json").write_text(json.dumps(res, indent=2))
     print(json.dumps(res, indent=2))

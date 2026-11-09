@@ -7,7 +7,8 @@ import os
 import re
 import time
 from ..config import azure_openai_configured
-from ..data.generate import PRODUCTS, REGIONS
+from ..data.generate import PRODUCTS
+from ..ml import predict
 from . import tools
 
 SYSTEM_PROMPT = """You are InsightPilot, an assistant for sales, supply chain and revenue teams.
@@ -48,7 +49,7 @@ class Agent:
             return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
     def _run_online(self, question: str, history: list[dict]) -> dict:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + tools.SCHEMA},
+        messages = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + tools.get_schema()},
                     *history, {"role": "user", "content": question}]
         calls = []
         for _ in range(MAX_STEPS):
@@ -74,13 +75,16 @@ class Agent:
             calls.append({"tool": name, "args": args})
             return tools.TOOL_FUNCS[name](**args)
 
-        region = next((r for r in REGIONS if r.lower() in ql), None)
-        sku = None
+        dims = predict.dimensions()
+        # longest-first so 'GROCERY II' wins over 'GROCERY I'
+        region = next((r for r in sorted(dims["regions"], key=len, reverse=True) if r.lower() in ql), None)
+        sku = next((x for x in sorted(dims["skus"], key=len, reverse=True) if x.lower() in ql), None)
         m = re.search(r"sku-?(\d{3})", ql)
-        if m:
+        if not sku and m and f"SKU-{m.group(1)}" in dims["skus"]:
             sku = f"SKU-{m.group(1)}"
-        else:
-            sku = next((p[0] for p in PRODUCTS if p[1].lower() in ql or p[1].split()[0].lower() in ql), None)
+        if not sku:  # synthetic demo data: match by product name
+            sku = next((p[0] for p in PRODUCTS if p[0] in dims["skus"]
+                        and (p[1].lower() in ql or p[1].split()[0].lower() in ql)), None)
 
         if re.search(r"forecast|predict|expect|توقع", ql) and sku and region:
             h = re.search(r"(\d+)\s*day", ql)
@@ -96,10 +100,10 @@ class Agent:
         if re.search(r"top|best|highest|revenue|sales|units|إيراد|مبيعات", ql):
             by = "region" if "region" in ql else "category" if "categor" in ql else "product_name"
             r = call("query_sales_sql",
-                     sql=f"SELECT {by}, ROUND(SUM(revenue),0) AS revenue FROM gold_daily_sales "
+                     sql=f"SELECT {by}, SUM(units) AS units FROM gold_daily_sales "
                          f"GROUP BY 1 ORDER BY 2 DESC LIMIT 5")
             lines = ", ".join(f"{a}: {b:,.0f}" for a, b in r["rows"])
-            return {"answer": f"Top {by} by revenue - {lines}", "tool_calls": calls}
-        return {"answer": "Offline demo mode understands: forecasts (e.g. 'forecast SKU-001 in North for 14 days'), "
-                          "policy questions, and revenue rankings. Configure Azure OpenAI for free-form questions.",
+            return {"answer": f"Top {by} by units sold - {lines}", "tool_calls": calls}
+        return {"answer": "Offline demo mode understands: forecasts (e.g. 'forecast <sku> in <region> for 14 days'), "
+                          "policy questions, and sales rankings. Configure Azure OpenAI for free-form questions.",
                 "tool_calls": calls}

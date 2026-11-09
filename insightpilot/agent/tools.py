@@ -8,12 +8,27 @@ from ..rag.retriever import get_retriever
 
 MAX_ROWS = 200
 
-SCHEMA = """Tables (DuckDB SQL, read-only):
-gold_daily_sales(sale_date DATE, store_id, region, channel, sku, product_name, category, units INT, unit_price DOUBLE, revenue DOUBLE, promo_flag INT)
-gold_monthly_summary(month DATE, region, category, units, revenue, promo_share)
-Regions: North, South, East, West. Channels: Supermarket, Convenience, Wholesale.
-Categories: Beverages, Juice, Snacks, Dairy, Bakery. SKUs look like SKU-001..SKU-010.
-Date range: 2024-01-01 to the latest sale_date in the data."""
+
+
+def get_schema() -> str:
+    """Schema + the actual dimension values in the loaded dataset."""
+    con = duckdb.connect(str(db_path()), read_only=True)
+    try:
+        def vals(col):
+            return [r[0] for r in con.execute(f"SELECT DISTINCT {col} FROM gold_daily_sales ORDER BY 1").fetchall()]
+        lo, hi = con.execute("SELECT MIN(sale_date), MAX(sale_date) FROM gold_daily_sales").fetchone()
+        regions, channels, cats, skus = vals("region"), vals("channel"), vals("category"), vals("sku")
+    finally:
+        con.close()
+    return (
+        "Tables (DuckDB SQL, read-only):\n"
+        "gold_daily_sales(sale_date DATE, store_id, region, channel, sku, product_name, category, "
+        "units INT, promo_items INT, is_holiday INT, oil_price DOUBLE)\n"
+        "gold_monthly_summary(month DATE, region, category, units, promo_share)\n"
+        "There is NO price/revenue column: measure sales in units.\n"
+        f"Date range: {lo} to {hi}.\n"
+        f"Regions: {regions}\nChannels: {channels}\nCategories: {cats}\nSkus: {skus}")
+
 
 _FORBIDDEN = re.compile(
     r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|pragma|install|load|export|"
@@ -30,10 +45,6 @@ def validate_sql(sql: str) -> str:
     if _FORBIDDEN.search(s):
         raise ValueError("Query contains a forbidden keyword")
     return s
-
-
-def get_schema() -> str:
-    return SCHEMA
 
 
 def query_sales_sql(sql: str) -> dict:
@@ -63,14 +74,14 @@ TOOL_SPECS = [
     {"type": "function", "function": {
         "name": "query_sales_sql",
         "description": "Run a read-only SELECT on the sales warehouse (call get_schema first if unsure). "
-                       "Use for historical facts: revenue, units, rankings, trends.",
+                       "Use for historical facts: units sold, rankings, trends, promotions.",
         "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}}},
     {"type": "function", "function": {
         "name": "get_forecast",
-        "description": "ML demand forecast (units per day) for one SKU in one region, up to 28 days ahead.",
+        "description": "ML demand forecast (units per day) for one sku in one region, up to 28 days ahead.",
         "parameters": {"type": "object", "properties": {
-            "sku": {"type": "string", "description": "e.g. SKU-001"},
-            "region": {"type": "string", "enum": ["North", "South", "East", "West"]},
+            "sku": {"type": "string", "description": "a value from the Skus list in the schema"},
+            "region": {"type": "string", "description": "a value from the Regions list in the schema"},
             "horizon_days": {"type": "integer", "minimum": 1, "maximum": 28},
             "promo": {"type": "boolean", "description": "assume a promotion runs in the period"}},
             "required": ["sku", "region"]}}},

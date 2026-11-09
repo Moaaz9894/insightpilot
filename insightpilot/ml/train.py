@@ -1,7 +1,6 @@
-"""Train the demand-forecast model, track it in MLflow, register it, save a bundle."""
+"""Train the demand-forecast model, track it in MLflow, register it, save a bundle.
+`fit_and_evaluate` is pure pandas/LightGBM so it also runs unchanged inside a Databricks notebook."""
 from __future__ import annotations
-import duckdb
-import joblib
 import mlflow
 import numpy as np
 import pandas as pd
@@ -19,29 +18,37 @@ def wmape(y, yhat) -> float:
     return float(np.abs(y - yhat).sum() / max(np.abs(y).sum(), 1e-9))
 
 
-def train() -> dict:
-    con = duckdb.connect(str(db_path()), read_only=True)
-    df = con.execute("SELECT * FROM gold_sku_region_daily").df()
-    con.close()
+def fit_and_evaluate(df: pd.DataFrame) -> dict:
+    """df = gold_sku_region_daily. Holds out the last VAL_DAYS days; returns model, features and metrics."""
     skus, regions = sorted(df["sku"].unique()), sorted(df["region"].unique())
     feat = build_features(df, skus, regions).dropna(subset=["lag_28", "roll_28"])
     print(f"training rows={len(feat):,} series={len(skus) * len(regions)}")
     cutoff = pd.to_datetime(feat["sale_date"]).max() - pd.Timedelta(days=VAL_DAYS)
     is_val = pd.to_datetime(feat["sale_date"]) > cutoff
     tr, va = feat[~is_val], feat[is_val]
+    model = LGBMRegressor(**PARAMS).fit(tr[FEATURES], tr["units"])
+    metrics = {
+        "val_wmape": wmape(va["units"], model.predict(va[FEATURES])),
+        "baseline_wmape_roll28": wmape(va["units"], va["roll_28"]),
+    }
+    metrics["improvement_vs_baseline"] = 1 - metrics["val_wmape"] / metrics["baseline_wmape_roll28"]
+    return {"model": model, "feat": feat, "skus": skus, "regions": regions, "metrics": metrics}
+
+
+def train() -> dict:
+    import duckdb
+    import joblib
+    con = duckdb.connect(str(db_path()), read_only=True)
+    df = con.execute("SELECT * FROM gold_sku_region_daily").df()
+    con.close()
+    res = fit_and_evaluate(df)
+    model, feat, skus, regions, metrics = (res[k] for k in ("model", "feat", "skus", "regions", "metrics"))
 
     mlflow.set_tracking_uri(mlflow_uri())
     if mlflow.get_experiment_by_name("demand-forecast") is None:  # keep artifacts inside the store
         mlflow.create_experiment("demand-forecast", artifact_location=(home() / "mlartifacts").as_uri())
     mlflow.set_experiment("demand-forecast")
     with mlflow.start_run(run_name="lightgbm") as run:
-        model = LGBMRegressor(**PARAMS).fit(tr[FEATURES], tr["units"])
-        pred = model.predict(va[FEATURES])
-        metrics = {
-            "val_wmape": wmape(va["units"], pred),
-            "baseline_wmape_roll28": wmape(va["units"], va["roll_28"]),
-        }
-        metrics["improvement_vs_baseline"] = 1 - metrics["val_wmape"] / metrics["baseline_wmape_roll28"]
         mlflow.log_params({**PARAMS, "val_days": VAL_DAYS, "features": ",".join(FEATURES)})
         mlflow.log_metrics(metrics)
         try:  # Registry needs a DB-backed store (sqlite locally, Databricks in the cloud)

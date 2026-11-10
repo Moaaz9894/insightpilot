@@ -3,6 +3,9 @@ same code runs locally, in Docker and on Azure."""
 from __future__ import annotations
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 POLICY_DIR = REPO_ROOT / "docs" / "policies"

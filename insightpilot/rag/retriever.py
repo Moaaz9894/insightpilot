@@ -62,7 +62,7 @@ class AzureSearchRetriever:
         self.client = SearchClient(ep, self.INDEX, cred)
         self.aoai = AzureOpenAI(azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
                                 api_key=os.environ["AZURE_OPENAI_API_KEY"],
-                                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"))
+                                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"))
         self.embed_model = os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT", "text-embedding-3-small")
 
     def _embed(self, texts: list[str]) -> list[list[float]]:

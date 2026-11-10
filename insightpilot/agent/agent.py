@@ -30,7 +30,7 @@ class Agent:
             self.client = AzureOpenAI(
                 azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
                 api_key=os.environ["AZURE_OPENAI_API_KEY"],
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"))
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"))
             self.model = os.environ["AZURE_OPENAI_DEPLOYMENT"]
 
     # ------------------------------------------------------------------ public
@@ -53,8 +53,9 @@ class Agent:
                     *history, {"role": "user", "content": question}]
         calls = []
         for _ in range(MAX_STEPS):
+            # gpt-5-mini is a reasoning model: it rejects `temperature`, so none is passed.
             resp = self.client.chat.completions.create(
-                model=self.model, messages=messages, tools=tools.TOOL_SPECS, temperature=0)
+                model=self.model, messages=messages, tools=tools.TOOL_SPECS)
             msg = resp.choices[0].message
             if not msg.tool_calls:
                 return {"answer": msg.content, "tool_calls": calls}

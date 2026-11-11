@@ -27,8 +27,8 @@ Expected impact: fewer ad-hoc analyst requests, faster promo/replenishment decis
 | Lakehouse | DuckDB, `sql/*.sql` | Databricks Delta + Unity Catalog (**verified** on Free Edition) |
 | ML tracking/registry | MLflow (SQLite) | Databricks MLflow + Unity Catalog model registry (**verified**) |
 | Forecast serving | in-process model | Batch-scored Delta table `gold_forecast_28d` (**verified**); Model Serving endpoint: planned |
-| Retrieval | TF-IDF | Azure AI Search hybrid (keyword + vector) |
-| LLM | offline demo router | Azure OpenAI (function calling) |
+| Retrieval | TF-IDF | Azure AI Search hybrid (keyword + vector) (**verified**) |
+| LLM | offline demo router | Azure OpenAI `gpt-5-mini` function calling (**verified**) |
 | Hosting | uvicorn | Docker → Azure Container Apps |
 
 ## Results (real data: Favorita, 3.0M rows)
@@ -39,15 +39,22 @@ The model forecasts 528 series (family × region) 28 days ahead and is evaluated
 |---|---|
 | Forecast WMAPE (LightGBM) | **11.7 %** vs 20.2 % naive baseline (**−42 %** error) |
 | Same pipeline on Databricks | 11.8 % vs 20.2 % (library-version differences) |
-| Retrieval hit@1 / hit@3 | 100 % / 100 % (10 questions) |
+| Retrieval hit@1 / hit@3 | 100 % / 100 % (10 questions; TF-IDF and Azure AI Search hybrid) |
 | SQL-injection/forbidden-query attempts blocked | 6 / 6 |
-| Agent tool-routing accuracy (offline) | 3 / 3 |
+| Agent tool-routing accuracy | 3 / 3 offline router · 3 / 3 with Azure OpenAI (`gpt-5-mini`) |
 | Automated tests | 32 passing (pipeline, ML, batch scoring, security, RAG, API, MCP, real-data ingest) |
 
 ![API demo](docs/img/api-chat-real.jpeg)
 
 Baseline = rolling 28-day mean of past demand. Features: calendar, promotion intensity, national holidays, oil price, 28-day lag/rolling demand.
 **CI runs on a synthetic dataset** (no Kaggle access in CI); the real-data numbers above come from running the ingest locally (`make eval` or `python -m eval.run_eval`).
+
+## Chat UI
+Run `make ui` (PowerShell: set `INSIGHTPILOT_HOME` to the Favorita store first for real data). With the Azure keys in `.env` the
+assistant uses Azure OpenAI function calling; without keys it falls back to the offline demo router.
+
+![Chat UI: policy question with cited source](docs/img/ui-chat-azure.png)
+![Chat UI: demand forecast](docs/img/ui-forecast-azure.png)
 
 ## Quick start
 Synthetic demo data (no downloads needed):
@@ -78,6 +85,7 @@ Works offline with zero keys (demo router). Copy `.env.example` → `.env` and a
 - **Data-quality gates** in the pipeline fail the run instead of serving bad data.
 - **Tools defined once**, reused by the agent, REST API and MCP server.
 - **Errors go back to the model** so it can self-correct; step limit prevents loops.
+- **Offline-first tests:** the test suite blanks all Azure variables, so it never touches cloud resources even when a real `.env` exists.
 - Auth via API key (secret store in cloud), structured logs of tool calls + latency.
 
 ## Databricks (verified)
@@ -98,17 +106,23 @@ Setup: clone this repo as a Databricks Git folder, upload `sales_raw.csv` to a U
 3. `bash infra/deploy_azure.sh` → builds in ACR and deploys to Container Apps (scale-to-zero).
 4. Set a **cost budget alert** first. Move secrets to Key Vault for production.
 
-> **Honest status:** local stack, tests, eval, real-data (Favorita) runs and the Databricks pipeline
-> (Delta medallion, MLflow, Unity Catalog registry, batch forecasts) are verified. `AzureSearchRetriever`,
-> the Azure OpenAI loop and `deploy_azure.sh` are written to the SDK/CLI docs but **not yet run against live
-> Azure resources**; expect small fixes on first deploy. Databricks Model Serving is not used (Free Edition):
-> forecasts are batch-scored into the `gold_forecast_28d` Delta table.
+> `gpt-5-mini` is a reasoning model: no `temperature` is sent and answers take roughly 8-16 s. Azure AI Search runs on the
+> Free tier (50 MB, no SLA). Verified live: index `policies` (15 chunks), hybrid retrieval and the function-calling agent loop.
+
+![Azure AI Search index](docs/img/azure-search-index.png)
+![Azure OpenAI deployments in Foundry](docs/img/foundry-deployments.png)
+
+> **Honest status:** local stack, tests, eval, real-data (Favorita) runs, the Databricks pipeline
+> (Delta medallion, MLflow, Unity Catalog registry, batch forecasts) and the Azure OpenAI + Azure AI Search path
+> (hybrid retrieval, function-calling agent) are verified against live resources. `deploy_azure.sh` (Container Apps)
+> is written to the CLI docs but **not yet run**; expect small fixes on first deploy. Databricks Model Serving is
+> not used (Free Edition): forecasts are batch-scored into the `gold_forecast_28d` Delta table.
 
 ## Use cases it adapts to (swap data + docs, keep the platform)
 Route-to-Market (outlet/route questions) · Revenue Growth Management (promo effectiveness, price rules) ·
 Supply Chain (demand-driven safety stock) · Finance (credit/returns policy Q&A, sales analytics).
 
 ## Evaluation & next steps
-- Add LLM-as-judge for groundedness/answer-relevance on a golden set once Azure OpenAI is attached.
+- Add LLM-as-judge for groundedness/answer-relevance on a golden set now that Azure OpenAI is attached.
 - Add prices to enable revenue and price-elasticity analysis (Favorita has units only); add hierarchical/Prophet baselines and prediction intervals.
 - Expose forecasts through a Databricks Model Serving endpoint (paid tier); add drift monitoring and a scheduled retraining job.

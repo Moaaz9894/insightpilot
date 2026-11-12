@@ -13,3 +13,5 @@ azure-search-documents>=11.6
 azure-core>=1.30
 mcp>=1.2,<2
 python-dotenv>=1.0
+chainlit>=2.0
+requests>=2.31

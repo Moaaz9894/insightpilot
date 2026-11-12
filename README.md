@@ -50,7 +50,7 @@ Baseline = rolling 28-day mean of past demand. Features: calendar, promotion int
 **CI runs on a synthetic dataset** (no Kaggle access in CI); the real-data numbers above come from running the ingest locally (`make eval` or `python -m eval.run_eval`).
 
 ## Chat UI
-Run `make ui` (PowerShell: set `INSIGHTPILOT_HOME` to the Favorita store first for real data). With the Azure keys in `.env` the
+Start the API (`uvicorn insightpilot.api.main:app`; for real data set `INSIGHTPILOT_HOME` to the Favorita store in the API's shell), then run `make ui` (= `chainlit run ui/app.py -w`). With the Azure keys in `.env` the
 assistant uses Azure OpenAI function calling; without keys it falls back to the offline demo router.
 
 ![Chat UI: policy question with cited source](docs/img/ui-chat-azure.png)

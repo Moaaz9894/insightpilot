@@ -1,0 +1,26 @@
+# Run the whole stack locally:  docker compose up --build
+# API  -> http://localhost:8000/docs      UI -> http://localhost:8001
+# Azure keys come from .env at run time (never baked into the image).
+services:
+  api:
+    build: .
+    image: insightpilot:local
+    env_file: .env
+    environment:
+      API_KEY: ${API_KEY:-local-test-key}
+    ports:
+      - "8000:8000"
+
+  ui:
+    image: insightpilot:local
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_URL: http://api:8000
+      API_KEY: ${API_KEY:-local-test-key}
+    command: ["chainlit", "run", "ui/app.py", "--host", "0.0.0.0", "--port", "8001", "--headless"]
+    ports:
+      - "8001:8001"
+    healthcheck:
+      disable: true   # the image's HEALTHCHECK targets the API port (8000)

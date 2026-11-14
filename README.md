@@ -29,7 +29,7 @@ Expected impact: fewer ad-hoc analyst requests, faster promo/replenishment decis
 | Forecast serving | in-process model | Batch-scored Delta table `gold_forecast_28d` (**verified**); Model Serving endpoint: planned |
 | Retrieval | TF-IDF | Azure AI Search hybrid (keyword + vector) (**verified**) |
 | LLM | offline demo router | Azure OpenAI `gpt-5-mini` function calling (**verified**) |
-| Hosting | uvicorn | Docker → Azure Container Apps |
+| Hosting | uvicorn / Docker Compose | Docker → Azure Container Registry → Azure Container Apps (**verified**) |
 
 ## Results (real data: Favorita, 3.0M rows)
 Dataset: Kaggle *Store Sales – Time Series Forecasting* (54 stores, 33 product families, 16 regions, 2013–2017).
@@ -75,6 +75,11 @@ uvicorn insightpilot.api.main:app --reload
 ```
 Works offline with zero keys (demo router). Copy `.env.example` → `.env` and add Azure keys for full LLM + vector search.
 
+Both services in containers (API on :8000, UI on :8001):
+```bash
+docker compose up --build
+```
+
 ## Key engineering decisions
 - **No train/serve skew**: one `build_features()` for training and serving.
 - **28-day lag features** → any horizon ≤ 28 days is forecast in one pass from real history (no recursive error). Lags are computed on a complete daily calendar, so closed-store days (e.g. Dec 25) never shift them.
@@ -86,7 +91,8 @@ Works offline with zero keys (demo router). Copy `.env.example` → `.env` and a
 - **Tools defined once**, reused by the agent, REST API and MCP server.
 - **Errors go back to the model** so it can self-correct; step limit prevents loops.
 - **Offline-first tests:** the test suite blanks all Azure variables, so it never touches cloud resources even when a real `.env` exists.
-- Auth via API key (secret store in cloud), structured logs of tool calls + latency.
+- Auth via API key (Container Apps secrets in cloud), structured logs of tool calls + latency.
+- **Reproducible image:** the warehouse and the trained model are built into the Docker image at build time (`python -m insightpilot.bootstrap`), so containers start fast and every deploy runs the exact same artifacts.
 
 ## Databricks (verified)
 `databricks/01_medallion_and_mlflow.py` runs the **same SQL and training code** on Databricks Free Edition
@@ -100,11 +106,62 @@ Setup: clone this repo as a Databricks Git folder, upload `sales_raw.csv` to a U
 ![Model registered in Unity Catalog](docs/img/dbx-model-registered.png)
 ![Batch forecasts](docs/img/dbx-forecast-table.png)
 
-## Azure deployment
+## Azure deployment (verified)
+The demo runs on Azure Container Apps as two apps built from a single image in Azure Container Registry:
+
+| App | Role | Ingress | Port |
+|---|---|---|---|
+| `insightpilot-api` | FastAPI backend (forecast model, SQL + retrieval tools, agent) | internal | 8000 |
+| `insightpilot-ui` | Chainlit chat UI | public | 8001 |
+
+Azure OpenAI (chat + embeddings) and Azure AI Search are external services called by the API.
+
 1. Create Azure OpenAI (chat + `text-embedding-3-small` deployments) and Azure AI Search.
 2. `python -m insightpilot.rag.retriever` → indexes policies into AI Search.
-3. `bash infra/deploy_azure.sh` → builds in ACR and deploys to Container Apps (scale-to-zero).
-4. Set a **cost budget alert** first. Move secrets to Key Vault for production.
+3. Set a **cost budget alert** first, then build and deploy:
+
+```powershell
+$RG = "rg-insightpilot"; $ACR = "<your-acr-name>"; $LOC = "francecentral"
+az group create -n $RG -l $LOC
+az acr create -n $ACR -g $RG --sku Basic --admin-enabled true
+
+# Build and push the image (the real CSV is baked in if store/favorita/raw/sales_raw.csv exists)
+az acr build -r $ACR -t insightpilot:v1 .
+
+az containerapp env create -n insightpilot-env -g $RG -l $LOC
+$ACR_SERVER = az acr show -n $ACR --query loginServer -o tsv
+$ACR_USER   = az acr credential show -n $ACR --query username -o tsv
+$ACR_PASS   = az acr credential show -n $ACR --query "passwords[0].value" -o tsv
+$API_KEY    = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+
+# API (internal)
+az containerapp create -n insightpilot-api -g $RG --environment insightpilot-env `
+  --image "$ACR_SERVER/insightpilot:v1" `
+  --registry-server $ACR_SERVER --registry-username $ACR_USER --registry-password $ACR_PASS `
+  --ingress internal --target-port 8000 `
+  --cpu 0.5 --memory 1.0Gi --min-replicas 1 --max-replicas 1 `
+  --secrets "aoai-key=<key>" "search-key=<key>" "api-key=$API_KEY" `
+  --env-vars "AZURE_OPENAI_API_KEY=secretref:aoai-key" "AZURE_SEARCH_KEY=secretref:search-key" "API_KEY=secretref:api-key" `
+    "AZURE_OPENAI_ENDPOINT=<url>" "AZURE_OPENAI_DEPLOYMENT=<chat-deployment>" `
+    "AZURE_OPENAI_EMBED_DEPLOYMENT=<embed-deployment>" "AZURE_SEARCH_ENDPOINT=<url>"
+
+# UI (public)
+$API_FQDN = az containerapp show -n insightpilot-api -g $RG --query properties.configuration.ingress.fqdn -o tsv
+az containerapp create -n insightpilot-ui -g $RG --environment insightpilot-env `
+  --image "$ACR_SERVER/insightpilot:v1" `
+  --registry-server $ACR_SERVER --registry-username $ACR_USER --registry-password $ACR_PASS `
+  --ingress external --target-port 8001 `
+  --cpu 0.5 --memory 1.0Gi --min-replicas 1 --max-replicas 1 `
+  --secrets "api-key=$API_KEY" `
+  --env-vars "API_KEY=secretref:api-key" "API_URL=https://$API_FQDN" "CHAINLIT_HOST=0.0.0.0" "CHAINLIT_PORT=8001" `
+  --command "chainlit" --args "run" "ui/app.py"
+```
+
+Notes:
+- `API_KEY` must be the same value in both apps.
+- Chainlit reads `CHAINLIT_HOST` / `CHAINLIT_PORT`, so `--host` / `--port` are not passed as args (the Azure CLI would parse them as its own options).
+- Data lives inside the image (read-only in practice); changing data or retraining means rebuilding and redeploying the image.
+- To save cost when not demoing: `az containerapp update -n <app> -g $RG --min-replicas 0` (first request after that has a cold start). Move secrets to Key Vault for production.
 
 > `gpt-5-mini` is a reasoning model: no `temperature` is sent and answers take roughly 8-16 s. Azure AI Search runs on the
 > Free tier (50 MB, no SLA). Verified live: index `policies` (15 chunks), hybrid retrieval and the function-calling agent loop.
@@ -113,10 +170,10 @@ Setup: clone this repo as a Databricks Git folder, upload `sales_raw.csv` to a U
 ![Azure OpenAI deployments in Foundry](docs/img/foundry-deployments.png)
 
 > **Honest status:** local stack, tests, eval, real-data (Favorita) runs, the Databricks pipeline
-> (Delta medallion, MLflow, Unity Catalog registry, batch forecasts) and the Azure OpenAI + Azure AI Search path
-> (hybrid retrieval, function-calling agent) are verified against live resources. `deploy_azure.sh` (Container Apps)
-> is written to the CLI docs but **not yet run**; expect small fixes on first deploy. Databricks Model Serving is
-> not used (Free Edition): forecasts are batch-scored into the `gold_forecast_28d` Delta table.
+> (Delta medallion, MLflow, Unity Catalog registry, batch forecasts), the Azure OpenAI + Azure AI Search path
+> (hybrid retrieval, function-calling agent) and the Azure Container Apps deployment (API + UI, running the
+> real-data model) are verified against live resources. Databricks Model Serving is not used (Free Edition):
+> forecasts are batch-scored into the `gold_forecast_28d` Delta table.
 
 ## Use cases it adapts to (swap data + docs, keep the platform)
 Route-to-Market (outlet/route questions) · Revenue Growth Management (promo effectiveness, price rules) ·
@@ -126,3 +183,4 @@ Supply Chain (demand-driven safety stock) · Finance (credit/returns policy Q&A,
 - Add LLM-as-judge for groundedness/answer-relevance on a golden set now that Azure OpenAI is attached.
 - Add prices to enable revenue and price-elasticity analysis (Favorita has units only); add hierarchical/Prophet baselines and prediction intervals.
 - Expose forecasts through a Databricks Model Serving endpoint (paid tier); add drift monitoring and a scheduled retraining job.
+- Harden the cloud deployment: Key Vault + managed identity instead of registry admin credentials, and a CI/CD job that builds and rolls out new image tags.
